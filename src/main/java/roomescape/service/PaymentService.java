@@ -28,6 +28,30 @@ public class PaymentService {
     private final ApplicationEventPublisher eventPublisher;
     private final PaymentGateway paymentGateway;
 
+    @Transactional
+    public PaymentConfirmResult confirm(final PaymentSuccessCommand command) {
+        final OrderId orderId = new OrderId(command.orderId());
+        final Payment payment = paymentRepository.findByOrderId(orderId)
+                .orElseThrow(() -> new BusinessException(ErrorCode.PAYMENT_NOT_FOUND));
+        final String paymentKey = command.paymentKey();
+        if (!payment.isSameAmount(command.amount())) {
+            throw new BusinessException(ErrorCode.PAYMENT_AMOUNT_MISMATCH);
+        }
+
+        final PaymentConfirmation confirmation = new PaymentConfirmation(
+                paymentKey, orderId.id(), command.amount()
+        );
+
+        final PaymentResult paymentResult = paymentGateway.confirm(confirmation);
+
+        final Payment updatedPayment = payment.confirm(paymentKey);
+
+        paymentRepository.update(updatedPayment);
+        eventPublisher.publishEvent(new ReservationConfirmationEvent(updatedPayment.getReservationId()));
+
+        return new PaymentConfirmResult(paymentResult.orderId(), paymentResult.approvedAmount(), paymentResult.paymentKey());
+    }
+
     public PaymentReadyResult create(final PaymentCreateCommand command) {
         if (!reservationRepository.existsById(command.reservationId())) {
             throw new BusinessException(ErrorCode.RESERVATION_NOT_FOUND);
@@ -40,30 +64,6 @@ public class PaymentService {
         );
         final Payment savedPayment = paymentRepository.save(payment);
         return PaymentReadyResult.from(savedPayment);
-    }
-
-    @Transactional
-    public PaymentConfirmResult confirm(final PaymentSuccessCommand command) {
-        final OrderId orderId = new OrderId(command.orderId());
-        final Payment payment = paymentRepository.findByOrderId(orderId)
-                .orElseThrow(() -> new BusinessException(ErrorCode.PAYMENT_NOT_FOUND));
-        final String paymentKey = command.paymentKey();
-        if (!payment.isSameAmount(command.amount())) {
-            throw new BusinessException(ErrorCode.PAYMENT_AMOUNT_MISMATCH);
-        }
-        final Payment updatedPayment = payment.confirm(paymentKey);
-        paymentRepository.update(updatedPayment);
-
-        eventPublisher.publishEvent(new ReservationConfirmationEvent(
-                updatedPayment.getReservationId()
-        ));
-
-        final PaymentConfirmation confirmation = new PaymentConfirmation(
-                updatedPayment.getPaymentKey(), updatedPayment.getOrderId().id(), updatedPayment.getAmount()
-        );
-        final PaymentResult paymentResult = paymentGateway.confirm(confirmation);
-
-        return new PaymentConfirmResult(paymentResult.orderId(), paymentResult.approvedAmount(), paymentResult.paymentKey());
     }
 
     public void fail(final String orderId) {

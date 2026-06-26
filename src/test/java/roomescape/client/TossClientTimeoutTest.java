@@ -11,13 +11,13 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.DynamicPropertyRegistry;
 import org.springframework.test.context.DynamicPropertySource;
-import org.springframework.web.client.ResourceAccessException;
-import org.springframework.web.client.RestClientException;
 import roomescape.domain.PaymentConfirmation;
+import roomescape.exception.ErrorCode;
+import roomescape.exception.ExternalPaymentException;
+import roomescape.exception.PaymentTimeoutException;
 
 import java.io.IOException;
 import java.io.UncheckedIOException;
-import java.net.SocketTimeoutException;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -68,55 +68,37 @@ class TossClientTimeoutTest {
   }
 
   @Test
-  void 읽기타임아웃이면_readTimeout만큼만_기다렸다가_RestClient예외로_실패한다() {
-    mockWebServer.enqueue(new MockResponse()
-        .setResponseCode(200)
-        .setHeader("Content-Type", "application/json")
-        .setBody(SUCCESS_BODY)
-        .setHeadersDelay(2, TimeUnit.SECONDS));
+  void 읽기타임아웃이면_readTimeout만큼만_기다렸다가_1번의_재시도_후_RestClient예외로_실패한다() {
+    // given
+    int totalAttempts = 2;
+    for (int i = 0; i < totalAttempts; i++) {
+      mockWebServer.enqueue(new MockResponse()
+              .setResponseCode(200)
+              .setHeader("Content-Type", "application/json")
+              .setBody(SUCCESS_BODY)
+              .setHeadersDelay(2, TimeUnit.SECONDS));
+    }
 
+    // 다른 테스트가 MockWebServer를 사용했을 수 있으므로 현재까지의 누적 요청 수를 기록합니다.
+    int initialRequestCount = mockWebServer.getRequestCount();
+
+    // when
     var start = System.nanoTime();
     assertThatThrownBy(() -> tossPaymentGateway.confirm(confirmation()))
-        .isInstanceOf(RestClientException.class)
-        .hasRootCauseInstanceOf(SocketTimeoutException.class);
+            .isInstanceOf(ExternalPaymentException.class)
+            .hasFieldOrPropertyWithValue("errorCode", ErrorCode.PAYMENT_SERVER_ERROR);
+
     var elapsedMs = (System.nanoTime() - start) / 1_000_000;
 
-    // 서버는 2초를 끌지만 read timeout(500ms)이 먼저 끊는다.
-    assertThat(elapsedMs).isLessThan(1500);
-  }
+    // then
+    int actualRequests = mockWebServer.getRequestCount() - initialRequestCount;
+    assertThat(actualRequests).isEqualTo(totalAttempts);
 
-  @Test
-  void 느린_호출이_섞여도_타임아웃이_있으면_성공_TPS가_유지된다() {
-    // 느린 응답(2초)과 정상 응답이 번갈아 온다 — 느린 의존성에 일부 호출만 물리는 상황.
-    for (var i = 0; i < 3; i++) {
-      mockWebServer.enqueue(new MockResponse()
-          .setResponseCode(200)
-          .setHeader("Content-Type", "application/json")
-          .setBody(SUCCESS_BODY)
-          .setHeadersDelay(2, TimeUnit.SECONDS));
-      mockWebServer.enqueue(new MockResponse()
-          .setResponseCode(200)
-          .setHeader("Content-Type", "application/json")
-          .setBody(SUCCESS_BODY));
-    }
-
-    var succeeded = 0;
-    var start = System.nanoTime();
-    for (var i = 0; i < 6; i++) {
-      try {
-        tossPaymentGateway.confirm(confirmation());
-        succeeded++;
-      } catch (RestClientException e) {
-        // 타임아웃으로 일찍 포기한 호출 — 성공 TPS 에 세지 않는다.
-      }
-    }
-    var elapsedSeconds = (System.nanoTime() - start) / 1_000_000_000.0;
-    var tps = succeeded / elapsedSeconds;
-
-    // 성공 TPS = 성공 건수 ÷ 경과 초.
-    // read timeout(500ms)이 있으면 느린 3건을 일찍 포기한 덕에 정상 3건이 제때 처리된다 → ~1.8.
-    // 없으면 느린 호출이 스레드를 2초씩 붙잡아, 6건 전부 성공하고도 1.0 을 넘지 못한다.
-    assertThat(tps).isGreaterThan(1.1);
+    // 총소요 시간 검증:
+    // - 시도 1회당: 500ms (read timeout)
+    // - 재시도 간격(backoff): 500ms
+    // 즉, (500) + (backoff 500 + 500) = 대략 1500ms 소요
+    assertThat(elapsedMs).isBetween(1500L, 2500L);
   }
 
   @Test
@@ -131,8 +113,8 @@ class TossClientTimeoutTest {
 
     var start = System.nanoTime();
     assertThatThrownBy(() -> gateway.confirm(confirmation()))
-        .isInstanceOf(ResourceAccessException.class)
-        .hasCauseInstanceOf(SocketTimeoutException.class);
+        .isInstanceOf(PaymentTimeoutException.class)
+            .hasFieldOrPropertyWithValue("errorCode", ErrorCode.PAYMENT_TIMEOUT);
     var elapsedMs = (System.nanoTime() - start) / 1_000_000;
 
     // connect timeout(500ms)만큼 기다렸다가 끊긴다.

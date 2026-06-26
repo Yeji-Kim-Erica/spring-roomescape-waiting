@@ -25,6 +25,10 @@ public enum ErrorCode {
     THEME_HAS_RESERVATION(HttpStatus.CONFLICT, "해당 테마에 잔여 예약이 존재합니다."),
     THEME_HAS_WAITING_LIST(HttpStatus.CONFLICT, "해당 테마에 잔여 예약 대기가 존재합니다."),
     QUEUED_WAITING_LIST(HttpStatus.CONFLICT, "해당 시간대에 예약 대기가 존재합니다."),
+    PAYMENT_ALREAY_PROCESSED(HttpStatus.CONFLICT, "이미 승인된 결제입니다."),
+
+    PAYMENT_TIMEOUT(HttpStatus.SERVICE_UNAVAILABLE, "결제 서버와 연결이 지연되었습니다."),
+    PAYMENT_SERVER_ERROR(HttpStatus.INTERNAL_SERVER_ERROR, "결제 서버 내부 오류가 발생했습니다."),
     ;
 
     private final HttpStatus httpStatus;
